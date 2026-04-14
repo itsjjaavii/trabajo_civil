@@ -1,162 +1,111 @@
 // Librerias
-#include <Wire.h>                   // I2C
-#include <SparkFun_MS5803_I2C.h>    // Sensor de presion
-#include <Adafruit_VCNL4040.h>      // Sensor de turbidez
+#include <Wire.h>                  // Para I2C
+#include <SparkFun_MS5803_I2C.h>   // Para el sensor de presion
+#include <Adafruit_VCNL4040.h>     // Para el sensor de turbidez
 #include "libreriaSleep.hpp"
 
-#define SDA_I2C 33
-#define SCL_I2C 35
+// De la placa civil
+#define EN_LDO_1     18
+#define EN_LDO_2     16
+#define EN_LDO_3     14
+#define DIP_1         3
+#define DIP_2         5
+#define DIP_3         1
+#define LED_BUILT_IN 15
+#define SDA          33
+#define SCL          35
 
-// Para la comunicacion RS485
-#define UART_TX_RS485 21
-#define UART_RX_RS485 17
+// Para la comunicacion
+#define UART2_TX 21
+#define UART2_RX 17
 
-// Debug
-#define DEBUG_PIN 39
+// ---- Sensores ----
+MS5803            sensorPresion(ADDRESS_HIGH);  // MS5803 en 0x77
+Adafruit_VCNL4040 sensorTurbidez;               // VCNL4040 en 0x60 
 
-// -------- Sensores --------
-
-// MS5803
-MS5803 pressureSensor(ADDRESS_HIGH);
-double pressure_abs;
-
-// VCNL4040
-Adafruit_VCNL4040 turbiditySensor;
-
-bool pressure_ok = false;
-bool turbidity_ok = false;
-
-uint16_t prox_raw  = 0;
-uint16_t als_raw   = 0;
-uint16_t white_raw = 0;
-float lux_val      = 0.0;
+// ---- Variables globales ----
+double   pressure_abs = 0.0;
+uint16_t proximity    = 0;      // valor raw de proximidad 
+float    lux          = 0.0;   // iluminancia ambiental
 
 void setup()
 {
-  // Bus I2C comun para ambos sensores
-  Wire.begin(SDA_I2C, SCL_I2C);
+  Wire.begin(SDA, SCL);
 
-  // Debug: si este pin esta en LOW, espera 3 s
-  pinMode(DEBUG_PIN, INPUT_PULLUP);
-  if (digitalRead(DEBUG_PIN) == LOW)
+  // Modo debug: si el pin 39 esta en LOW, espera 3s para abrir el monitor serial
+  pinMode(39, INPUT_PULLUP);
+  if (digitalRead(39) == LOW)
   {
     delay(3000);
   }
 
-  // Serial USB y serial hacia RS485
   Serial.begin(115200);
-  Serial1.begin(115200, SERIAL_8N1, UART_RX_RS485, UART_TX_RS485);
+  Serial1.begin(115200, SERIAL_8N1, UART2_RX, UART2_TX);
 
-  // Si este pin realmente habilita algo externo, lo activamos
-  pinMode(EN_EQUIPO_EXTERNO, OUTPUT);
-  digitalWrite(EN_EQUIPO_EXTERNO, HIGH);
+  pinMode(LED_BUILT_IN, OUTPUT);
+  digitalWrite(LED_BUILT_IN, HIGH);
 
-  delay(50);  // tiempo de estabilizacion
+  delay(30); // Espera calibrada con el transmisor
 
-  // =========================================================
-  // 1) Inicializar MS5803
-  // =========================================================
-  pressureSensor.reset();
-  if (pressureSensor.begin() == 0)
+  // ---- Inicializar MS5803 ----
+  sensor.reset();
+  if (sensor.begin() == 0)
   {
-    pressure_ok = true;
-    pressure_abs = pressureSensor.getPressure(ADC_4096);
+    pressure_abs = sensor.getPressure(ADC_4096);
   }
   else
   {
-    pressure_ok = false;
-    pressure_abs = -2;   // codigo de error heredado
+    pressure_abs = -2.0; // Indica fallo de inicializacion
   }
 
-  // =========================================================
-  // 2) Inicializar VCNL4040
-  // =========================================================
-  turbidity_ok = turbiditySensor.begin();
-
-  if (turbidity_ok)
+  // ---- Inicializar VCNL4040 ----
+  //  tiempo integracion alto -> mayor sensibilidad
+  //  LED current alto      -> mayor alcance optico
+  bool vcnlOK = sensorTurbidez.begin();
+  if (vcnlOK)
   {
-    // Configuracion inicial simple
-    turbiditySensor.setProximityHighResolution(true);
-    turbiditySensor.setProximityIntegrationTime(VCNL4040_PROXIMITY_INTEGRATION_TIME_8T);
-    turbiditySensor.setAmbientIntegrationTime(VCNL4040_AMBIENT_INTEGRATION_TIME_640MS);
-    turbiditySensor.setProximityLEDCurrent(VCNL4040_LED_CURRENT_200MA);
-    turbiditySensor.setProximityLEDDutyCycle(VCNL4040_LED_DUTY_1_40);
+    // Tiempo de integracion del sensor de proximidad: 8T (mayor precision)
+    sensorTurbidez.setProximityIntegrationTime(VCNL4040_PS_IT_8T);
 
-    delay(100);
+    // Corriente del LED IR: 200 mA (maximo, util bajo agua donde hay mas atenuacion)
+    sensorTurbidez.setLEDCurrent(VCNL4040_LED_CURRENT_200MA);
 
-    prox_raw  = turbiditySensor.getProximity();
-    als_raw   = turbiditySensor.getAmbientLight();
-    white_raw = turbiditySensor.getWhiteLight();
-    lux_val   = turbiditySensor.getLux();
+    // Tiempo de integracion del sensor de luz ambiente: 80ms
+    sensorTurbidez.setAmbientIntegrationTime(VCNL4040_ALS_IT_80MS);
+
+    // Leer valores
+    proximity = sensorTurbidez.getProximity();  // 0-65535, mayor valor = mas particulas
+    lux       = sensorTurbidez.getLux();        // Iluminancia en lux
   }
   else
   {
-    prox_raw  = 0xFFFF;
-    als_raw   = 0xFFFF;
-    white_raw = 0xFFFF;
-    lux_val   = -1.0;
+    // Indica fallo de inicializacion del VCNL4040
+    proximity = 0xFFFF;
+    lux       = -1.0;
   }
 
-  // =========================================================
-  // Debug por USB
-  // =========================================================
-  Serial.println("===== LECTURAS =====");
-
-  Serial.print("MS5803 pressure_abs (mbar)= ");
+  // ---- Mostrar en monitor serial ----
+  Serial.print("Pressure abs (mbar) = ");
   Serial.println(pressure_abs);
+  Serial.print("Proximity (turbidez) = ");
+  Serial.println(proximity);
+  Serial.print("Lux (ambiente) = ");
+  Serial.println(lux);
 
-  if (turbidity_ok)
-  {
-    Serial.println("VCNL4040 OK");
-    Serial.print("PROX  = ");
-    Serial.println(prox_raw);
-    Serial.print("ALS   = ");
-    Serial.println(als_raw);
-    Serial.print("WHITE = ");
-    Serial.println(white_raw);
-    Serial.print("LUX   = ");
-    Serial.println(lux_val);
-  }
-  else
-  {
-    Serial.println("VCNL4040 ERROR");
-  }
+  // ---- Enviar por UART ----
+  // formato CSV: "presion,proximidad,lux\n"
+  // ej "1013.25,4200,12.50"
+  Serial1.print(pressure_abs);
+  Serial1.print(",");
+  Serial1.print(proximity);
+  Serial1.print(",");
+  Serial1.println(lux);
 
-  // =========================================================
-  // Envio por Serial1 / RS485
-  // =========================================================
-  Serial1.print("PRES:");
-  Serial1.println(pressure_abs);
-
-  if (turbidity_ok)
-  {
-    Serial1.print("PROX:");
-    Serial1.println(prox_raw);
-
-    Serial1.print("ALS:");
-    Serial1.println(als_raw);
-
-    Serial1.print("WHITE:");
-    Serial1.println(white_raw);
-
-    Serial1.print("LUX:");
-    Serial1.println(lux_val);
-  }
-  else
-  {
-    Serial1.println("VCNL4040_ERROR");
-  }
-
-  delay(50);
-
-  // Apaga alimentacion externa si corresponde
-  digitalWrite(EN_EQUIPO_EXTERNO, LOW);
-
-  // Dormir
+  digitalWrite(LED_BUILT_IN, LOW);
   sleepESP(600);
 }
 
 void loop()
 {
-  // Nada: al despertar vuelve a setup()
+  // Nada, el flujo ocurre en setup() antes de dormir
 }
