@@ -6,7 +6,7 @@
 static const uint8_t MS5803_VERSION = 14;
 
 // Intervalo entre mediciones (0 = sin delay, medir continuamente)
-long sleepDuration_ms = 5000;
+long sleepDuration_ms = 1000;
 
 // Etiquetas de columnas para el monitor serial
 const char dataColumnLabels[] = "millis,ambient_light_x10,backscatter,pressure_x100,water_temp_x100";
@@ -69,7 +69,7 @@ void setup()
         while (true); // Detiene si algun sensor fallo
     }
 
-    Serial.println("Sensores OK.");
+    //Serial.println("Sensores OK.");
     Serial.println(dataColumnLabels);
 }
 
